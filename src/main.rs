@@ -11,6 +11,7 @@ struct State {
     queue: Queue,
     config: SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
+    render_pipeline: RenderPipeline,
 }
 
 impl State {
@@ -50,7 +51,7 @@ impl State {
 
         //使用adapter创建device和queue
         let (device, queue) = adapter.request_device(
-            &wgpu::DeviceDescriptor{
+            &DeviceDescriptor{
                 //features 字段允许我们指定我们想要的额外特性
                 //使用adapter.features() 或 device.features() 获得设备所支持特性的列表
                 features: Features::empty(),
@@ -83,6 +84,82 @@ impl State {
         };
         surface.configure(&device,&config);
 
+        //创建着色器并载入着色器文件
+        let shader = device.create_shader_module(&ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        //创建渲染管线布局
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                //定义管线中使用的绑定组布局
+                //绑定组布局描述了管线中使用的资源集合的布局
+                bind_group_layouts: &[],
+                //定义管线中使用到的推送常量（Push Constants）的范围
+                //推送常量是一种在绘制调用中快速传递少量数据的机制
+                push_constant_ranges: &[],
+        });
+
+        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            //指定渲染管线的布局
+            layout: Some(&render_pipeline_layout),
+            //设置顶点着色器状态
+            vertex: VertexState {
+                module: &shader,
+                //指定顶点着色器的入口点函数名
+                entry_point: "vs_main",
+                //buffers 字段用于告知 wgpu 我们要传递给顶点着色器的顶点类型
+                buffers: &[],
+            },
+            //设置片段着色器
+            fragment: Some(FragmentState {
+                module: &shader,
+                //指定片段着色器的入口点函数名
+                entry_point: "fs_main",
+                //片段着色器的输出颜色目标状态
+                targets: &[ColorTargetState {
+                    format: config.format,
+                    //混合模式为 REPLACE
+                    blend: Some(BlendState::REPLACE),
+                    //写掩码为 ColorWrites::ALL
+                    write_mask: ColorWrites::ALL,
+                }],
+            }),
+            //设置图元状态
+            primitive: PrimitiveState {
+                //图元的拓扑类型,使用TriangleList指定为三角形
+                topology: PrimitiveTopology::TriangleList,
+                //不使用索引缓冲区
+                strip_index_format: None,
+                //使用逆时针
+                front_face: FrontFace::Ccw,
+                //剔除背面
+                cull_mode: Some(Face::Back),
+                //多边形模式设置为填充
+                // 如果将该字段设置为除了 Fill 之外的任何值，都需要 Features::NON_FILL_POLYGON_MODE
+                polygon_mode: PolygonMode::Fill,
+                //WebGPU特性
+                unclipped_depth: false,
+                conservative: false,
+            },
+            //深度状态和模板测试,深度在这里不启用
+            depth_stencil: None,
+            //重采样的状态
+            multisample: MultisampleState {
+                //当为1时不使用多重采样
+                count: 1,
+                //多重采样掩码，这里为 !0，表示所有样本都有效
+                mask: !0,
+                //不启用 alpha 到覆盖（coverage）的转换
+                alpha_to_coverage_enabled: false,
+            },
+            //不使用多视图渲染
+            multiview: None,
+        });
+
         //将以上配置返回
         Self{
             surface,
@@ -90,6 +167,7 @@ impl State {
             queue,
             config,
             size,
+            render_pipeline,
         }
     }
 
@@ -137,9 +215,10 @@ impl State {
         //所以需要释放 encoder 上的可变借用，从而使得我们能使用 finish()
         {
             //使用作用域以释放内存
-            let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor{
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor{
                 //开启渲染通道
                 label: Some("Render Pass"),
+                //片元着色器中 [[location(0)]] 对应的目标
                 //color_attachments 定义颜色附件,用于存储颜色数据的纹理
                 color_attachments: &[RenderPassColorAttachment{
                     //iew 变量作为颜色附件的视图
@@ -150,9 +229,9 @@ impl State {
                     ops: Operations{
                         //load 字段来指定颜色附件的加载,其中Clear用来清除颜色附件
                         load: LoadOp::Clear(wgpu::Color{
-                            r : 0.1,
-                            g : 0.2,
-                            b : 0.3,
+                            r : 0.0,
+                            g : 0.8,
+                            b : 0.8,
                             a : 1.0  //此处为不透度
                         }),
                         //store 用于指定颜色附件的存储操作
@@ -162,6 +241,8 @@ impl State {
                 //用于定义深度和模板附件,此处没有定义深度和模板附件，所以置为None
                 depth_stencil_attachment: None,
             });
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.draw(0..3, 0..1);
         }
         // submit 方法能传入任何实现了 IntoIter 的参数
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -177,7 +258,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         //此处设置窗口标题
-        .with_title("learning Rust WGPU")
+        .with_title("Learning Rust WGPU")
         .build(&event_loop)
         .unwrap();
     let mut state = pollster::block_on(State::new(&window));
