@@ -1,9 +1,58 @@
 use wgpu::*;
+use wgpu::util::DeviceExt;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{WindowBuilder,Window}
 };
+
+//创建顶点数据
+#[repr(C)]
+#[derive(Copy, Clone, Debug,bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl Vertex{
+    //映射缓冲区方法
+    fn desc<'a>() -> VertexBufferLayout<'a>{
+        VertexBufferLayout{
+            //定义顶点宽度
+            array_stride: size_of::<Vertex>() as BufferAddress,
+            //移动顶点频率
+            step_mode: VertexStepMode::Vertex,
+            //顶点属性结构
+            attributes: &[
+                //顶点
+                VertexAttribute{
+                    //偏移字节数
+                    offset: 0,
+                    shader_location: 0,
+                    format: VertexFormat::Float32x3,
+                },
+                //颜色
+                VertexAttribute{
+                    format: VertexFormat::Float32x3,
+                    offset: size_of::<[f32;3]>() as BufferAddress,
+                    shader_location: 1,
+                }
+            ],
+        }
+    }
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [-0.5,  0.5, 0.0], color: [1.0, 0.0, 0.0] },  //左上
+    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },  //左下
+    Vertex { position: [ 0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },  //右下
+    Vertex { position: [ 0.5,  0.5, 0.0], color: [0.0, 0.0, 0.0] },  //右上
+];
+
+const INDICES: &[u16] = &[
+    0 ,1 ,2,
+    2 ,3 ,0,
+];
 
 struct State {
     surface: Surface,
@@ -12,6 +61,9 @@ struct State {
     config: SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: RenderPipeline,
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    num_indices: u32,     //此处用于确定顶点数量
 }
 
 impl State {
@@ -23,7 +75,7 @@ impl State {
 
         // instance 变量是到 GPU 的 handle,用于创建Adapter 和 Surface
         // Backends::all 对应 Vulkan + Metal + DX12 + 浏览器的 WebGPU
-        let instance = Instance::new(wgpu::Backends::all());
+        let instance = Instance::new(Backends::all());
 
         //用于绘制窗口，将内容绘制到屏幕,同时我们还需要用 surface 来请求 adapter
         let surface = unsafe {
@@ -112,7 +164,9 @@ impl State {
                 //指定顶点着色器的入口点函数名
                 entry_point: "vs_main",
                 //buffers 字段用于告知 wgpu 我们要传递给顶点着色器的顶点类型
-                buffers: &[],
+                buffers: &[
+                    Vertex::desc(),
+                ],
             },
             //设置片段着色器
             fragment: Some(FragmentState {
@@ -160,6 +214,29 @@ impl State {
             multiview: None,
         });
 
+        //配置顶点缓冲区
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                //指定缓冲区的初始内容,使用cast_slice将顶点切片转换为字节数组
+                contents: bytemuck::cast_slice(VERTICES),
+                //指定为顶点缓冲区
+                usage: BufferUsages::VERTEX,
+            }
+        );
+
+        //索引缓冲区
+        let index_buffer = device.create_buffer_init(
+            &util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: BufferUsages::INDEX,
+            }
+        );
+
+        //确定顶点数量
+        let num_indices = INDICES.len() as u32;
+
         //将以上配置返回
         Self{
             surface,
@@ -168,6 +245,9 @@ impl State {
             config,
             size,
             render_pipeline,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
         }
     }
 
@@ -243,7 +323,11 @@ impl State {
                 depth_stencil_attachment: None,
             });
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw(0..3, 0..1);
+            //此处用来设置顶点缓冲区
+            render_pass.set_vertex_buffer(0,self.vertex_buffer.slice(..));
+            //索引缓冲绑定
+            render_pass.set_index_buffer(self.index_buffer.slice(..),IndexFormat::Uint16);
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
         // submit 方法能传入任何实现了 IntoIter 的参数
         self.queue.submit(std::iter::once(encoder.finish()));
