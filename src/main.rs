@@ -228,6 +228,7 @@ impl State {
                     //Operations 用于描述颜色附件的操作
                     ops: Operations{
                         //load 字段来指定颜色附件的加载,其中Clear用来清除颜色附件
+                        //此处可以设置背景颜色
                         load: LoadOp::Clear(wgpu::Color{
                             r : 0.0,
                             g : 0.8,
