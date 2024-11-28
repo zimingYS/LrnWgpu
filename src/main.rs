@@ -11,7 +11,7 @@ use winit::{
 #[derive(Copy, Clone, Debug,bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3],
+    tex_coords: [f32; 2],
 }
 
 impl Vertex{
@@ -33,7 +33,7 @@ impl Vertex{
                 },
                 //颜色
                 VertexAttribute{
-                    format: VertexFormat::Float32x3,
+                    format: VertexFormat::Float32x2,
                     offset: size_of::<[f32;3]>() as BufferAddress,
                     shader_location: 1,
                 }
@@ -43,10 +43,10 @@ impl Vertex{
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.5,  0.5, 0.0], color: [1.0, 0.0, 0.0] },  //左上
-    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },  //左下
-    Vertex { position: [ 0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },  //右下
-    Vertex { position: [ 0.5,  0.5, 0.0], color: [0.0, 0.0, 0.0] },  //右上
+    Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [0.0, 0.0] },  //左上
+    Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [0.0, 1.0] },  //左下
+    Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [1.0, 1.0] },  //右下
+    Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [1.0, 0.0] },  //右上
 ];
 
 const INDICES: &[u16] = &[
@@ -64,6 +64,7 @@ struct State {
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     num_indices: u32,     //此处用于确定顶点数量
+    diffuse_bind_group: BindGroup,
 }
 
 impl State {
@@ -136,6 +137,136 @@ impl State {
         };
         surface.configure(&device,&config);
 
+        //读取纹理
+        let diffuse_bytes = include_bytes!("img/happy_tree.png");
+        //从内存加载图像
+        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
+        //将图片转换为RGBA图像
+        let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
+
+        //将图片转换为元组
+        use image::GenericImageView;
+        let dimensions = diffuse_image.dimensions();
+
+        let texture_size = Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
+        };
+        let diffuse_texture = device.create_texture(
+            &TextureDescriptor {
+                // 所有纹理都会以三维数组形式存储，我们通过设置深度为 1 来表示这是二维的纹理
+                size: texture_size,
+                mip_level_count: 1, //
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                // 多数图像都使用 sRGB 格式，所以我们需要在此将其体现出来
+                format: TextureFormat::Rgba8UnormSrgb,
+                // TEXTURE_BINDING 告诉 wgpu 我们想在着色器中使用这个纹理
+                // COPY_DST 则表示我们想把数据复制到这个纹理
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                label: Some("diffuse_texture"),
+            }
+        );
+
+        queue.write_texture(
+            // 告诉 wgpu 从何处复制像素数据
+            ImageCopyTexture {
+                texture: &diffuse_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            // 实际的像素数据
+            diffuse_rgba,
+            // 纹理的内存布局
+            ImageDataLayout {
+                offset: 0,
+                bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),
+                rows_per_image: std::num::NonZeroU32::new(dimensions.1),
+            },
+            texture_size,
+        );
+
+        // 创建漫反射纹理视图
+        let diffuse_texture_view = diffuse_texture.create_view(&TextureViewDescriptor::default());
+        // 创建漫反射纹理采样器
+        let diffuse_sampler = device.create_sampler(&SamplerDescriptor {
+            // U轴方向上的纹理坐标地址模式
+            address_mode_u: AddressMode::ClampToEdge,
+            // V轴方向上的纹理坐标地址模式
+            address_mode_v: AddressMode::ClampToEdge,
+            // W轴方向上的纹理坐标地址模式
+            address_mode_w: AddressMode::ClampToEdge,
+            // 放大过滤模式
+            mag_filter: FilterMode::Linear,
+            // 缩小过滤模式
+            min_filter: FilterMode::Nearest,
+            // 多级渐远纹理过滤模式
+            mipmap_filter: FilterMode::Nearest,
+            // 默认值
+            ..Default::default()
+        });
+
+        //创建BindGroup
+        // 创建一个纹理绑定的布局
+        let texture_bind_group_layout = device.create_bind_group_layout(
+            &BindGroupLayoutDescriptor {
+                // 定义绑定的入口
+                entries: &[
+                    // 第一个入口，绑定纹理
+                    BindGroupLayoutEntry {
+                        binding: 0, // 绑定索引
+                        visibility: ShaderStages::FRAGMENT, // 可见性，片段着色器
+                        ty: BindingType::Texture { // 绑定类型为纹理
+                            multisampled: false, // 非多重采样
+                            view_dimension: TextureViewDimension::D2, // 纹理视图维度为2D
+                            sample_type: TextureSampleType::Float { filterable: true }, // 样本类型为浮点数，可过滤
+                        },
+                        count: None, // 无数量限制
+                    },
+                    // 第二个入口，绑定采样器
+                    BindGroupLayoutEntry {
+                        binding: 1, // 绑定索引
+                        visibility: ShaderStages::FRAGMENT, // 可见性，片段着色器
+                        ty: BindingType::Sampler( // 绑定类型为采样器
+                            // SamplerBindingType::Comparison 仅可供 TextureSampleType::Depth 使用
+                            // 如果纹理的 sample_type 是 TextureSampleType::Float { filterable: true }
+                            // 那么就应当使用 SamplerBindingType::Filtering
+                            // 否则会报错
+                            SamplerBindingType::Filtering, // 采样器类型为过滤
+                        ),
+                        count: None, // 无数量限制
+                    },
+                ],
+                label: Some("texture_bind_group_layout"), // 标签
+            }
+        );
+        // 创建一个diffuse_bind_group，用于绑定纹理和采样器
+        let diffuse_bind_group = device.create_bind_group(
+            &BindGroupDescriptor {
+                // 指定绑定的布局
+                layout: &texture_bind_group_layout,
+                // 指定绑定的条目
+                entries: &[
+                    BindGroupEntry {
+                        // 指定绑定的索引
+                        binding: 0,
+                        // 指定绑定的资源，这里是一个纹理视图
+                        resource: BindingResource::TextureView(&diffuse_texture_view),
+                    },
+                    BindGroupEntry {
+                        // 指定绑定的索引
+                        binding: 1,
+                        // 指定绑定的资源，这里是一个采样器
+                        resource: BindingResource::Sampler(&diffuse_sampler),
+                    }
+                ],
+                // 指定绑定的标签
+                label: Some("diffuse_bind_group"),
+            }
+        );
+
         //创建着色器并载入着色器文件
         let shader = device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -148,7 +279,7 @@ impl State {
                 label: Some("Render Pipeline Layout"),
                 //定义管线中使用的绑定组布局
                 //绑定组布局描述了管线中使用的资源集合的布局
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&texture_bind_group_layout],
                 //定义管线中使用到的推送常量（Push Constants）的范围
                 //推送常量是一种在绘制调用中快速传递少量数据的机制
                 push_constant_ranges: &[],
@@ -248,6 +379,7 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
+            diffuse_bind_group,
         }
     }
 
@@ -323,6 +455,8 @@ impl State {
                 depth_stencil_attachment: None,
             });
             render_pass.set_pipeline(&self.render_pipeline);
+            //绑定BindGroup
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             //此处用来设置顶点缓冲区
             render_pass.set_vertex_buffer(0,self.vertex_buffer.slice(..));
             //索引缓冲绑定
