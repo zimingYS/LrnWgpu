@@ -1,3 +1,5 @@
+mod texture;
+
 use wgpu::*;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -65,6 +67,7 @@ struct State {
     index_buffer: Buffer,
     num_indices: u32,     //此处用于确定顶点数量
     diffuse_bind_group: BindGroup,
+    diffuse_texture: texture::Texture,
 }
 
 impl State {
@@ -139,74 +142,8 @@ impl State {
 
         //读取纹理
         let diffuse_bytes = include_bytes!("img/happy_tree.png");
-        //从内存加载图像
-        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-        //将图片转换为RGBA图像
-        let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
+        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
 
-        //将图片转换为元组
-        use image::GenericImageView;
-        let dimensions = diffuse_image.dimensions();
-
-        let texture_size = Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
-            depth_or_array_layers: 1,
-        };
-        let diffuse_texture = device.create_texture(
-            &TextureDescriptor {
-                // 所有纹理都会以三维数组形式存储，我们通过设置深度为 1 来表示这是二维的纹理
-                size: texture_size,
-                mip_level_count: 1, //
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                // 多数图像都使用 sRGB 格式，所以我们需要在此将其体现出来
-                format: TextureFormat::Rgba8UnormSrgb,
-                // TEXTURE_BINDING 告诉 wgpu 我们想在着色器中使用这个纹理
-                // COPY_DST 则表示我们想把数据复制到这个纹理
-                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-                label: Some("diffuse_texture"),
-            }
-        );
-
-        queue.write_texture(
-            // 告诉 wgpu 从何处复制像素数据
-            ImageCopyTexture {
-                texture: &diffuse_texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: TextureAspect::All,
-            },
-            // 实际的像素数据
-            diffuse_rgba,
-            // 纹理的内存布局
-            ImageDataLayout {
-                offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),
-                rows_per_image: std::num::NonZeroU32::new(dimensions.1),
-            },
-            texture_size,
-        );
-
-        // 创建漫反射纹理视图
-        let diffuse_texture_view = diffuse_texture.create_view(&TextureViewDescriptor::default());
-        // 创建漫反射纹理采样器
-        let diffuse_sampler = device.create_sampler(&SamplerDescriptor {
-            // U轴方向上的纹理坐标地址模式
-            address_mode_u: AddressMode::ClampToEdge,
-            // V轴方向上的纹理坐标地址模式
-            address_mode_v: AddressMode::ClampToEdge,
-            // W轴方向上的纹理坐标地址模式
-            address_mode_w: AddressMode::ClampToEdge,
-            // 放大过滤模式
-            mag_filter: FilterMode::Linear,
-            // 缩小过滤模式
-            min_filter: FilterMode::Nearest,
-            // 多级渐远纹理过滤模式
-            mipmap_filter: FilterMode::Nearest,
-            // 默认值
-            ..Default::default()
-        });
 
         //创建BindGroup
         // 创建一个纹理绑定的布局
@@ -253,13 +190,13 @@ impl State {
                         // 指定绑定的索引
                         binding: 0,
                         // 指定绑定的资源，这里是一个纹理视图
-                        resource: BindingResource::TextureView(&diffuse_texture_view),
+                        resource: BindingResource::TextureView(&diffuse_texture.view),
                     },
                     BindGroupEntry {
                         // 指定绑定的索引
                         binding: 1,
                         // 指定绑定的资源，这里是一个采样器
-                        resource: BindingResource::Sampler(&diffuse_sampler),
+                        resource: BindingResource::Sampler(&diffuse_texture.sampler),
                     }
                 ],
                 // 指定绑定的标签
@@ -380,6 +317,7 @@ impl State {
             index_buffer,
             num_indices,
             diffuse_bind_group,
+            diffuse_texture,
         }
     }
 
