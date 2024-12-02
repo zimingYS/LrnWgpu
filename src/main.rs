@@ -45,16 +45,198 @@ impl Vertex{
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [0.0, 0.0] },  //左上
-    Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [0.0, 1.0] },  //左下
-    Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [1.0, 1.0] },  //右下
-    Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [1.0, 0.0] },  //右上
+    //使用前后面的顶点构造八个顶点
+    //正面
+    Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [0.0, 0.0] },  //左上 0
+    Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [0.0, 1.0] },  //左下 1
+    Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [1.0, 1.0] },  //右下 2
+    Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [1.0, 0.0] },  //右上 3
+
+    //后面
+    Vertex { position: [-0.5,  0.5, 1.0], tex_coords: [0.0, 0.0] },  //左上 4
+    Vertex { position: [-0.5, -0.5, 1.0], tex_coords: [0.0, 1.0] },  //左下 5
+    Vertex { position: [ 0.5, -0.5, 1.0], tex_coords: [1.0, 1.0] },  //右下 6
+    Vertex { position: [ 0.5,  0.5, 1.0], tex_coords: [1.0, 0.0] },  //右上 7
 ];
 
 const INDICES: &[u16] = &[
+    //正面
     0 ,1 ,2,
     2 ,3 ,0,
+    //上面
+    3, 0, 4,
+    7, 3, 4,
+    //下面
+    1, 5, 6,
+    2, 1, 6,
+    //左面
+    4, 0, 1,
+    5, 4, 1,
+    //右面
+    7, 6, 2,
+    3, 7, 2,
+    //后面
+    4, 5, 6,
+    6, 7, 4
 ];
+
+//将OPENGL矩阵转换为WGPU矩阵
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.0,
+    0.0, 0.0, 0.5, 1.0,
+);
+
+// 我们需要这个标注来让 Rust 正确存储用于着色器的数据
+#[repr(C)]
+// 这样配置可以让我们将其存储在缓冲区之中
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    // 我们不能将 bytemuck 与 cgmath 直接一起使用
+    // 因此需要先将 Matrix4 矩阵转为一个 4x4 的 f32 数组
+    view_proj: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    fn new() -> Self {
+        use cgmath::SquareMatrix;
+        Self {
+            view_proj: cgmath::Matrix4::identity().into(),
+        }
+    }
+
+    fn update_view_proj(&mut self, camera: &Camera) {
+        self.view_proj = camera.build_view_projection_matrix().into();
+    }
+}
+//增加相机
+struct Camera {
+    eye: cgmath::Point3<f32>,
+    target: cgmath::Point3<f32>,
+    up: cgmath::Vector3<f32>,
+    aspect: f32,
+    fovy: f32,
+    znear: f32,
+    zfar: f32,
+}
+
+impl Camera {
+    fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
+        // 1.
+        let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
+        // 2.
+        let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
+
+        // 3.
+        return OPENGL_TO_WGPU_MATRIX * proj * view;
+    }
+}
+
+//相机位置控制
+struct CameraController {
+    speed: f32,
+    is_forward_pressed: bool,
+    is_backward_pressed: bool,
+    is_left_pressed: bool,
+    is_right_pressed: bool,
+    is_up_pressed: bool,
+    is_down_pressed: bool,
+}
+
+impl CameraController {
+    fn new(speed: f32) -> Self {
+        Self {
+            speed,
+            is_forward_pressed: false,
+            is_backward_pressed: false,
+            is_left_pressed: false,
+            is_right_pressed: false,
+            is_up_pressed: false,
+            is_down_pressed: false,
+        }
+    }
+
+    fn process_events(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput {
+                input: KeyboardInput {
+                    state,
+                    virtual_keycode: Some(keycode),
+                    ..
+                },
+                ..
+            } => {
+                let is_pressed = *state == ElementState::Pressed;
+                match keycode {
+                    VirtualKeyCode::W | VirtualKeyCode::Up => {
+                        self.is_forward_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::A | VirtualKeyCode::Left => {
+                        self.is_left_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::S | VirtualKeyCode::Down => {
+                        self.is_backward_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::D | VirtualKeyCode::Right => {
+                        self.is_right_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::Q | VirtualKeyCode::Right => {
+                        self.is_up_pressed = is_pressed;
+                        true
+                    }
+                    VirtualKeyCode::E | VirtualKeyCode::Right => {
+                        self.is_down_pressed = is_pressed;
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn update_camera(&self, camera: &mut Camera) {
+        use cgmath::InnerSpace;
+        let forward = camera.target - camera.eye;
+        let forward_norm = forward.normalize();
+        let forward_mag = forward.magnitude();
+
+        // 防止摄像机离场景中心太近时出现故障
+        if self.is_forward_pressed && forward_mag > self.speed {
+            camera.eye += forward_norm * self.speed;
+        }
+        if self.is_backward_pressed {
+            camera.eye -= forward_norm * self.speed;
+        }
+
+        let right = forward_norm.cross(camera.up);
+
+        // 在按下前进或后退键时重做半径计算
+        let forward = camera.target - camera.eye;
+        let forward_mag = forward.magnitude();
+
+        if self.is_right_pressed {
+            // 重新调整目标与眼睛之间的距离，以使其不发生变化
+            // 因此，眼睛仍位于由目标和眼睛所组成的圆上。
+            camera.eye = camera.target - (forward + right * self.speed).normalize() * forward_mag;
+        }
+        if self.is_left_pressed {
+            camera.eye = camera.target - (forward - right * self.speed).normalize() * forward_mag;
+        }
+        if self.is_up_pressed {
+            camera.eye += camera.up * self.speed;
+        }
+        if self.is_down_pressed {
+            camera.eye -= camera.up * self.speed;
+        }
+    }
+}
 
 struct State {
     surface: Surface,
@@ -68,6 +250,11 @@ struct State {
     num_indices: u32,     //此处用于确定顶点数量
     diffuse_bind_group: BindGroup,
     diffuse_texture: texture::Texture,
+    camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: Buffer,
+    camera_bind_group: BindGroup,
+    camera_controller: CameraController,
 }
 
 impl State {
@@ -210,13 +397,69 @@ impl State {
             source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        //相机控制
+        let camera = Camera {
+            // 将相机向上移动 1 个单位，向后移动 2 个单位
+            // +z 对应屏幕外侧方向
+            eye: (0.0, 1.0, 2.0).into(),
+            // 将相机朝向原点
+            target: (0.0, 0.0, 0.0).into(),
+            // 定义哪个方向朝上
+            up: cgmath::Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(
+            &util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            }
+        );
+
+        let camera_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            ],
+            label: Some("camera_bind_group_layout"),
+        });
+
+        let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("camera_bind_group"),
+        });
+
         //创建渲染管线布局
         let render_pipeline_layout =
             device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
                 //定义管线中使用的绑定组布局
                 //绑定组布局描述了管线中使用的资源集合的布局
-                bind_group_layouts: &[&texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout ,
+                    &camera_bind_group_layout ,
+                ],
                 //定义管线中使用到的推送常量（Push Constants）的范围
                 //推送常量是一种在绘制调用中快速传递少量数据的机制
                 push_constant_ranges: &[],
@@ -259,7 +502,7 @@ impl State {
                 //使用逆时针
                 front_face: FrontFace::Ccw,
                 //剔除背面
-                cull_mode: Some(Face::Back),
+                cull_mode: None,
                 //多边形模式设置为填充
                 // 如果将该字段设置为除了 Fill 之外的任何值，都需要 Features::NON_FILL_POLYGON_MODE
                 polygon_mode: PolygonMode::Fill,
@@ -305,6 +548,9 @@ impl State {
         //确定顶点数量
         let num_indices = INDICES.len() as u32;
 
+        //相机控制
+        let camera_controller = CameraController::new(0.02);
+
         //将以上配置返回
         Self{
             surface,
@@ -318,6 +564,11 @@ impl State {
             num_indices,
             diffuse_bind_group,
             diffuse_texture,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            camera_controller,
         }
     }
 
@@ -339,10 +590,13 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
-        todo!()
+        self.camera_controller.process_events(event)
     }
 
     fn update(&mut self) {
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -395,6 +649,7 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             //绑定BindGroup
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             //此处用来设置顶点缓冲区
             render_pass.set_vertex_buffer(0,self.vertex_buffer.slice(..));
             //索引缓冲绑定
@@ -419,6 +674,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
     let mut state = pollster::block_on(State::new(&window));
+    let mut surface_configured = false;
 
     //初始化窗口大小
     state.resize(winit::dpi::PhysicalSize::new(800, 600));
@@ -429,26 +685,30 @@ fn main() {
                 ref event,
                 window_id,
             }
-            if window_id == window.id() => match event {
-                WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
-                    input: KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
+            if window_id == window.id() => if !state.input(event){
+                match event {
+                    WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
+                        input: KeyboardInput {
+                            state: ElementState::Pressed,
+                            virtual_keycode: Some(VirtualKeyCode::Escape),
+                            ..
+                        },
                         ..
+                    } => {
+                        *control_flow = ControlFlow::Exit
                     },
-                    ..
-                } => *control_flow = ControlFlow::Exit,
 
-                //此处用于窗口改变大小后重绘
-                WindowEvent::Resized(physical_size) => {
-                    state.resize(*physical_size);
+                    //此处用于窗口改变大小后重绘
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
+                    }
+                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        // new_inner_size 是 &&mut 类型，因此需要解引用两次
+                        state.resize(**new_inner_size);
+                    },
+
+                    _ => {}
                 }
-                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                    // new_inner_size 是 &&mut 类型，因此需要解引用两次
-                    state.resize(**new_inner_size);
-                },
-
-                _ => {}
             },
             //使用事件更新调用render方法
             Event::RedrawRequested(window_id ) if window_id == window.id() => {
@@ -470,5 +730,6 @@ fn main() {
                 window.request_redraw();
             },
             _ => {}
-    });
+        }
+    );
 }
