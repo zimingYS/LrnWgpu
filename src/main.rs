@@ -1,12 +1,24 @@
+//// 此项目仅用于个人学习使用，可以自行拉取项目并使用。
+//// 此项目参考自 https://doodlewind.github.io/learn-wgpu-cn/
+//// 此项目部分内容与源代码和教程有所不同，加上了本人自行修改的一部分内容。
+//// 此项目仅供参考，若侵权请私信或者在问题区提出，本人将删除此仓库。
+
 mod texture;
 
 use wgpu::*;
 use wgpu::util::DeviceExt;
+use cgmath::prelude::*;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{WindowBuilder,Window}
 };
+
+// 定义每行实例的数量
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+// 定义实例的位移 上面定义为10，则实例化为10x10。
+const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(NUM_INSTANCES_PER_ROW as f32 * 0.5, 0.0, NUM_INSTANCES_PER_ROW as f32 * 0.5);
+
 
 //创建顶点数据
 #[repr(C)]
@@ -44,6 +56,7 @@ impl Vertex{
     }
 }
 
+//顶点设置
 const VERTICES: &[Vertex] = &[
     //使用前后面的顶点构造八个顶点
     //正面
@@ -59,13 +72,14 @@ const VERTICES: &[Vertex] = &[
     Vertex { position: [ 0.5,  0.5, 1.0], tex_coords: [1.0, 0.0] },  //右上 7
 ];
 
+//将顶点绘制到面
 const INDICES: &[u16] = &[
     //正面
     0 ,1 ,2,
     2 ,3 ,0,
     //上面
-    3, 0, 4,
-    7, 3, 4,
+    4, 5, 6,
+    6, 7, 4,
     //下面
     1, 5, 6,
     2, 1, 6,
@@ -99,6 +113,7 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
+///相机控制部分
 impl CameraUniform {
     fn new() -> Self {
         use cgmath::SquareMatrix;
@@ -124,13 +139,12 @@ struct Camera {
 
 impl Camera {
     fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
-        // 1.
-        let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
-        // 2.
-        let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
-
-        // 3.
-        return OPENGL_TO_WGPU_MATRIX * proj * view;
+    // 创建一个视图矩阵，该矩阵表示从self.eye看向self.target，并且self.up表示向上的方向
+    let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
+    // 创建一个透视投影矩阵，该矩阵表示从self.eye看向self.target，并且self.up表示向上的方向
+    let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
+    // 将视图矩阵和透视投影矩阵相乘，得到最终的变换矩阵
+    OPENGL_TO_WGPU_MATRIX * proj * view
     }
 }
 
@@ -158,6 +172,7 @@ impl CameraController {
         }
     }
 
+    //此部分用于处理相机控制事件
     fn process_events(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput {
@@ -186,6 +201,7 @@ impl CameraController {
                         self.is_right_pressed = is_pressed;
                         true
                     }
+                    //这边增加Q和E用来控制上下移动。
                     VirtualKeyCode::Q | VirtualKeyCode::Right => {
                         self.is_up_pressed = is_pressed;
                         true
@@ -201,20 +217,28 @@ impl CameraController {
         }
     }
 
+
+    //此部分用于更新相机视角
     fn update_camera(&self, camera: &mut Camera) {
         use cgmath::InnerSpace;
+        // 计算摄像机的前向向量
         let forward = camera.target - camera.eye;
+        // 归一化前向向量
         let forward_norm = forward.normalize();
+        // 计算前向向量的长度
         let forward_mag = forward.magnitude();
 
         // 防止摄像机离场景中心太近时出现故障
         if self.is_forward_pressed && forward_mag > self.speed {
+            // 如果按下前进键，则摄像机向前移动
             camera.eye += forward_norm * self.speed;
         }
         if self.is_backward_pressed {
+            // 如果按下后退键，则摄像机向后移动
             camera.eye -= forward_norm * self.speed;
         }
 
+        // 计算摄像机的右向量
         let right = forward_norm.cross(camera.up);
 
         // 在按下前进或后退键时重做半径计算
@@ -230,10 +254,71 @@ impl CameraController {
             camera.eye = camera.target - (forward - right * self.speed).normalize() * forward_mag;
         }
         if self.is_up_pressed {
+            // 摄像机向上移动
             camera.eye += camera.up * self.speed;
         }
         if self.is_down_pressed {
+            // 摄像机向下移动
             camera.eye -= camera.up * self.speed;
+        }
+    }
+}
+
+//创建实例缓冲区
+struct Instance{
+    position : cgmath::Vector3<f32>,
+                //这里为四元数
+    rotation : cgmath::Quaternion<f32>,
+}
+//将实例化缓冲区转换为矩阵
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw{
+    model : [[f32 ; 4]; 4],
+}
+//增加方法 实现矩阵转换
+impl Instance{
+    fn to_raw(&self) -> InstanceRaw{
+        InstanceRaw{
+            // 计算模型的变换矩阵
+            model: (cgmath::Matrix4::from_translation(self.position) * cgmath::Matrix4::from(self.rotation)).into(),
+        }
+    }
+}
+
+impl InstanceRaw{
+    fn desc<'a>() -> VertexBufferLayout<'a> {
+        VertexBufferLayout {
+            array_stride: size_of::<InstanceRaw>() as BufferAddress,
+            // 我们需要从把 Vertex 的 step mode 切换为 Instance
+            // 这样着色器只有在开始处理一次新实例化绘制时，才会接受下一份实例
+            step_mode: VertexStepMode::Instance,
+            attributes: &[
+                VertexAttribute {
+                    offset: 0,
+                    // 虽然顶点着色器现在只使用位置 0 和 1，但在后面的教程中，我们将对 Vertex 使用位置 2、3 和 4
+                    // 因此我们将从 5 号 slot 开始，以免在后面导致冲突
+                    shader_location: 5,
+                    format: VertexFormat::Float32x4,
+                },
+                // 一个 mat4 需要占用 4 个顶点 slot，因为严格来说它是 4 个vec4
+                // 我们需要为每个 vec4 定义一个 slot，并在着色器中重新组装出 mat4
+                VertexAttribute {
+                    offset: size_of::<[f32; 4]>() as BufferAddress,
+                    shader_location: 6,
+                    format: VertexFormat::Float32x4,
+                },
+                VertexAttribute {
+                    offset: size_of::<[f32; 8]>() as BufferAddress,
+                    shader_location: 7,
+                    format: VertexFormat::Float32x4,
+                },
+                VertexAttribute {
+                    offset: size_of::<[f32; 12]>() as BufferAddress,
+                    shader_location: 8,
+                    format: VertexFormat::Float32x4,
+                },
+            ],
         }
     }
 }
@@ -255,6 +340,8 @@ struct State {
     camera_buffer: Buffer,
     camera_bind_group: BindGroup,
     camera_controller: CameraController,
+    instances: Vec<Instance>,
+    instance_buffer: Buffer,
 }
 
 impl State {
@@ -266,7 +353,7 @@ impl State {
 
         // instance 变量是到 GPU 的 handle,用于创建Adapter 和 Surface
         // Backends::all 对应 Vulkan + Metal + DX12 + 浏览器的 WebGPU
-        let instance = Instance::new(Backends::all());
+        let instance = wgpu::Instance::new(Backends::all());
 
         //用于绘制窗口，将内容绘制到屏幕,同时我们还需要用 surface 来请求 adapter
         let surface = unsafe {
@@ -276,7 +363,7 @@ impl State {
         //adapter(适配器)是指向显卡的一个handle.
         //它可以用来获取显卡信息
         let adapter = instance.request_adapter(
-            &wgpu::RequestAdapterOptions{
+            &RequestAdapterOptions{
                 //power_preference 参数有两个可选项：LowPower 和 HighPerformance
                 //使用LowPower 时将对应一个有利于电池续航的适配器（如集成显卡）。
                 // 相应地，HighPerformance 对应的适配器将指向独立显卡这样更耗电但性能更强的 GPU。
@@ -477,6 +564,7 @@ impl State {
                 //buffers 字段用于告知 wgpu 我们要传递给顶点着色器的顶点类型
                 buffers: &[
                     Vertex::desc(),
+                    InstanceRaw::desc(),
                 ],
             },
             //设置片段着色器
@@ -527,7 +615,7 @@ impl State {
 
         //配置顶点缓冲区
         let vertex_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
+            &util::BufferInitDescriptor {
                 label: Some("Vertex Buffer"),
                 //指定缓冲区的初始内容,使用cast_slice将顶点切片转换为字节数组
                 contents: bytemuck::cast_slice(VERTICES),
@@ -551,6 +639,41 @@ impl State {
         //相机控制
         let camera_controller = CameraController::new(0.02);
 
+        //实例化创建
+        // 创建一个包含NUM_INSTANCES_PER_ROW个实例的向量
+        let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
+            // 对每一行进行迭代
+            (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                // 计算每个实例的位置
+                let position = cgmath::Vector3 { x: x as f32, y: 0.0, z: z as f32 } - INSTANCE_DISPLACEMENT;
+
+                // 计算每个实例的旋转
+                let rotation = if position.is_zero() {
+                    // 需要这行特殊处理，这样在 (0, 0, 0) 的物体不会被缩放到 0
+                    // 因为错误的四元数会影响到缩放
+                    cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
+                } else {
+                    //这边改为0.0使得不旋转
+                    cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(0.0))
+                };
+
+                // 创建一个实例
+                Instance {
+                    position, rotation,
+                }
+            })
+        }).collect::<Vec<_>>();
+
+        //创建instance_buffer
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(
+            &util::BufferInitDescriptor {
+                label: Some("Instance Buffer"),
+                contents: bytemuck::cast_slice(&instance_data),
+                usage: BufferUsages::VERTEX,
+            }
+        );
+
         //将以上配置返回
         Self{
             surface,
@@ -569,6 +692,8 @@ impl State {
             camera_buffer,
             camera_bind_group,
             camera_controller,
+            instances,
+            instance_buffer,
         }
     }
 
@@ -646,15 +771,18 @@ impl State {
                 //用于定义深度和模板附件,此处没有定义深度和模板附件，所以置为None
                 depth_stencil_attachment: None,
             });
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_pipeline(&self.render_pipeline);
             //绑定BindGroup
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             //此处用来设置顶点缓冲区
-            render_pass.set_vertex_buffer(0,self.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             //索引缓冲绑定
-            render_pass.set_index_buffer(self.index_buffer.slice(..),IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
+
+            //实例化绑定
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
         // submit 方法能传入任何实现了 IntoIter 的参数
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -674,7 +802,8 @@ fn main() {
         .build(&event_loop)
         .unwrap();
     let mut state = pollster::block_on(State::new(&window));
-    let mut surface_configured = false;
+
+    // let mut surface_configured = false;  这边忘记干什么用的了 先注释掉
 
     //初始化窗口大小
     state.resize(winit::dpi::PhysicalSize::new(800, 600));
