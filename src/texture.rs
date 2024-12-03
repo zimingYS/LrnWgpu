@@ -1,6 +1,7 @@
 ////此文件用于加载纹理
 
 use image::GenericImageView;
+use std::path::Path;
 use anyhow::*;
 
 pub struct Texture {
@@ -10,6 +11,19 @@ pub struct Texture {
 }
 
 impl Texture {
+    //读取纹理
+    pub fn load<P: AsRef<Path>>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: P,
+    ) -> Result<Self> {
+        // 需要这样处理来满足 borrow checker
+        let path_copy = path.as_ref().to_path_buf();
+        let label = path_copy.to_str();
+
+        let img = image::open(path)?;
+        Self::from_image(device, queue, &img, label)
+    }
     // 从字节数组创建纹理
     pub fn from_bytes(
         device: &wgpu::Device,
@@ -31,7 +45,7 @@ impl Texture {
         label: Option<&str>
     ) -> Result<Self> {
         // 将图像转换为RGBA8格式
-        let rgba = img.as_rgba8().unwrap();
+        let rgba = img.to_rgba8();
         // 获取图像的尺寸
         let dimensions = img.dimensions();
 
@@ -62,7 +76,7 @@ impl Texture {
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            rgba,
+            &rgba,
             wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),

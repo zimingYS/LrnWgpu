@@ -4,6 +4,8 @@
 //// 此项目仅供参考，若侵权请私信或者在问题区提出，本人将删除此仓库。
 
 mod texture;
+mod model;
+mod resources;
 
 use wgpu::*;
 use wgpu::util::DeviceExt;
@@ -13,86 +15,13 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{WindowBuilder,Window}
 };
+use crate::model::{DrawModel, Vertex};
 
 // 定义每行实例的数量
 const NUM_INSTANCES_PER_ROW: u32 = 10;
 // 定义实例的位移 上面定义为10，则实例化为10x10。
 const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(NUM_INSTANCES_PER_ROW as f32 * 0.5, 0.0, NUM_INSTANCES_PER_ROW as f32 * 0.5);
 
-
-//创建顶点数据
-#[repr(C)]
-#[derive(Copy, Clone, Debug,bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    tex_coords: [f32; 2],
-}
-
-impl Vertex{
-    //映射缓冲区方法
-    fn desc<'a>() -> VertexBufferLayout<'a>{
-        VertexBufferLayout{
-            //定义顶点宽度
-            array_stride: size_of::<Vertex>() as BufferAddress,
-            //移动顶点频率
-            step_mode: VertexStepMode::Vertex,
-            //顶点属性结构
-            attributes: &[
-                //顶点
-                VertexAttribute{
-                    //偏移字节数
-                    offset: 0,
-                    shader_location: 0,
-                    format: VertexFormat::Float32x3,
-                },
-                //颜色
-                VertexAttribute{
-                    format: VertexFormat::Float32x2,
-                    offset: size_of::<[f32;3]>() as BufferAddress,
-                    shader_location: 1,
-                }
-            ],
-        }
-    }
-}
-
-//顶点设置
-const VERTICES: &[Vertex] = &[
-    //使用前后面的顶点构造八个顶点
-    //正面
-    Vertex { position: [-0.5,  0.5, 0.0], tex_coords: [0.0, 0.0] },  //左上 0
-    Vertex { position: [-0.5, -0.5, 0.0], tex_coords: [0.0, 1.0] },  //左下 1
-    Vertex { position: [ 0.5, -0.5, 0.0], tex_coords: [1.0, 1.0] },  //右下 2
-    Vertex { position: [ 0.5,  0.5, 0.0], tex_coords: [1.0, 0.0] },  //右上 3
-
-    //后面
-    Vertex { position: [-0.5,  0.5, 1.0], tex_coords: [0.0, 0.0] },  //左上 4
-    Vertex { position: [-0.5, -0.5, 1.0], tex_coords: [0.0, 1.0] },  //左下 5
-    Vertex { position: [ 0.5, -0.5, 1.0], tex_coords: [1.0, 1.0] },  //右下 6
-    Vertex { position: [ 0.5,  0.5, 1.0], tex_coords: [1.0, 0.0] },  //右上 7
-];
-
-//将顶点绘制到面
-const INDICES: &[u16] = &[
-    //正面
-    0 ,1 ,2,
-    2 ,3 ,0,
-    //上面
-    4, 5, 6,
-    6, 7, 4,
-    //下面
-    1, 5, 6,
-    2, 1, 6,
-    //左面
-    4, 0, 1,
-    5, 4, 1,
-    //右面
-    7, 6, 2,
-    3, 7, 2,
-    //后面
-    4, 5, 6,
-    6, 7, 4
-];
 
 //将OPENGL矩阵转换为WGPU矩阵
 #[rustfmt::skip]
@@ -330,9 +259,6 @@ struct State {
     config: SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: RenderPipeline,
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    num_indices: u32,     //此处用于确定顶点数量
     diffuse_bind_group: BindGroup,
     diffuse_texture: texture::Texture,
     camera: Camera,
@@ -343,6 +269,7 @@ struct State {
     instances: Vec<Instance>,
     instance_buffer: Buffer,
     depth_texture: texture::Texture,
+    obj_model: model::Model,
 }
 
 impl State {
@@ -564,7 +491,7 @@ impl State {
                 entry_point: "vs_main",
                 //buffers 字段用于告知 wgpu 我们要传递给顶点着色器的顶点类型
                 buffers: &[
-                    Vertex::desc(),
+                    model::ModelVertex::desc(),
                     InstanceRaw::desc(),
                 ],
             },
@@ -620,51 +547,25 @@ impl State {
             multiview: None,
         });
 
-        //配置顶点缓冲区
-        let vertex_buffer = device.create_buffer_init(
-            &util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                //指定缓冲区的初始内容,使用cast_slice将顶点切片转换为字节数组
-                contents: bytemuck::cast_slice(VERTICES),
-                //指定为顶点缓冲区
-                usage: BufferUsages::VERTEX,
-            }
-        );
-
-        //索引缓冲区
-        let index_buffer = device.create_buffer_init(
-            &util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(INDICES),
-                usage: BufferUsages::INDEX,
-            }
-        );
-
-        //确定顶点数量
-        let num_indices = INDICES.len() as u32;
-
         //相机控制
         let camera_controller = CameraController::new(0.02);
 
         //实例化创建
+        const SPACE_BETWEEN: f32 = 3.0;
         // 创建一个包含NUM_INSTANCES_PER_ROW个实例的向量
         let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
-            // 对每一行进行迭代
             (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                // 计算每个实例的位置
-                let position = cgmath::Vector3 { x: x as f32, y: 0.0, z: z as f32 } - INSTANCE_DISPLACEMENT;
+                let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
 
-                // 计算每个实例的旋转
+                let position = cgmath::Vector3 { x, y: 0.0, z };
+
                 let rotation = if position.is_zero() {
-                    // 需要这行特殊处理，这样在 (0, 0, 0) 的物体不会被缩放到 0
-                    // 因为错误的四元数会影响到缩放
                     cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
                 } else {
-                    //这边改为0.0使得不旋转
                     cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(0.0))
                 };
 
-                // 创建一个实例
                 Instance {
                     position, rotation,
                 }
@@ -684,6 +585,15 @@ impl State {
         //创建深度
         let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
+        //纹理材质
+        log::warn!("Load model");
+        let obj_model =
+            resources::load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+                .await
+                .unwrap();
+
+
+
         //将以上配置返回
         Self{
             surface,
@@ -692,9 +602,6 @@ impl State {
             config,
             size,
             render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
             diffuse_bind_group,
             diffuse_texture,
             camera,
@@ -705,6 +612,7 @@ impl State {
             instances,
             instance_buffer,
             depth_texture,
+            obj_model,
         }
     }
 
@@ -792,16 +700,12 @@ impl State {
             });
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_pipeline(&self.render_pipeline);
-            //绑定BindGroup
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            //此处用来设置顶点缓冲区
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            //索引缓冲绑定
-            render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
-
-            //实例化绑定
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
+            //纹理绑定
+            render_pass.draw_model_instanced(
+                &self.obj_model,
+                0..self.instances.len() as u32,
+                &self.camera_bind_group,
+            );
         }
         // submit 方法能传入任何实现了 IntoIter 的参数
         self.queue.submit(std::iter::once(encoder.finish()));
