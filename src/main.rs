@@ -342,6 +342,7 @@ struct State {
     camera_controller: CameraController,
     instances: Vec<Instance>,
     instance_buffer: Buffer,
+    depth_texture: texture::Texture,
 }
 
 impl State {
@@ -598,8 +599,14 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            //深度状态和模板测试,深度在这里不启用
-            depth_stencil: None,
+            //深度状态和模板测试
+            depth_stencil: Some(DepthStencilState {
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
             //重采样的状态
             multisample: MultisampleState {
                 //当为1时不使用多重采样
@@ -674,6 +681,9 @@ impl State {
             }
         );
 
+        //创建深度
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
+
         //将以上配置返回
         Self{
             surface,
@@ -694,6 +704,7 @@ impl State {
             camera_controller,
             instances,
             instance_buffer,
+            depth_texture,
         }
     }
 
@@ -711,6 +722,7 @@ impl State {
             self.config.height = new_size.height;
             //重新设置surface
             self.surface.configure(&self.device,&self.config);
+            self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
@@ -768,8 +780,15 @@ impl State {
                         store: true,
                     }
                 }],
-                //用于定义深度和模板附件,此处没有定义深度和模板附件，所以置为None
-                depth_stencil_attachment: None,
+                //用于定义深度和模板附件
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_pipeline(&self.render_pipeline);
